@@ -1,10 +1,10 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Shell script for building Phoenix-RTOS firmware
 #
 # Builder for Phoenix-RTOS core components
 #
-# Copyright 2018, 2019 Phoenix Systems
+# Copyright 2018-2024 Phoenix Systems
 # Author: Kaja Swat, Aleksander Kaminski, Pawel Pisarczyk
 #
 
@@ -12,11 +12,23 @@
 set -e
 
 b_log "Building phoenix-rtos-kernel"
-KERNEL_MAKECMDGOALS="install-headers"
-make -C "phoenix-rtos-kernel" $KERNEL_MAKECMDGOALS all
+make -C "phoenix-rtos-kernel" all
 
-b_log "Building libphoenix"
-make -C "libphoenix" all install
+if [ "$LIBPHOENIX_DEVEL_MODE" = "y" ]; then
+	make -C "phoenix-rtos-kernel" install-headers
+
+	b_log "Building libphoenix"
+	make -C "libphoenix" all install
+fi
+
+b_log "Building libtty"
+make -C "phoenix-rtos-devices" libtty libtty-install
+
+b_log "Building libposixsrv"
+make -C "phoenix-rtos-posixsrv" libposixsrv libposixsrv-install
+
+b_log "Building phoenix-rtos-corelibs"
+make -C "phoenix-rtos-corelibs" all
 
 b_log "Building phoenix-rtos-filesystems"
 make -C "phoenix-rtos-filesystems" all install
@@ -32,15 +44,3 @@ make -C "phoenix-rtos-utils" all install
 
 b_log "phoenix-rtos-lwip"
 make -C "phoenix-rtos-lwip" all install
-
-#b_log "Building posixsrv"
-#make -C "phoenix-rtos-posixsrv" all install
-
-# FIXME: compile host tools using host-pc target?
-b_log "Building hostutils"
-make -C "phoenix-rtos-hostutils" -f Makefile.old $CLEAN all
-cp "$PREFIX_BUILD_HOST/prog.stripped/phoenixd" "$PREFIX_BOOT"
-cp "$PREFIX_BUILD_HOST/prog.stripped/psu" "$PREFIX_BOOT"
-
-b_log "Building phoenix-rtos-corelibs"
-make -C "phoenix-rtos-corelibs" all

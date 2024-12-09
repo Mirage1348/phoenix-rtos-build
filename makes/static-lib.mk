@@ -10,6 +10,7 @@
 # - DEPS - list of components from current repo to be completed before starting this one
 #
 # - LOCAL_CFLAGS  - additional CFLAGS for current component compilation
+# - LOCAL_CXXFLAGS  - additional CXXFLAGS for current component compilation
 #
 
 
@@ -23,25 +24,40 @@ ifeq ($(origin LOCAL_DIR), undefined)
   LOCAL_DIR := $(patsubst $(TOPDIR)/%,%,$(dir $(lastword $(CLIENT_MAKES))))
 endif
 
+# binary.mk clears all variables it uses so we should expect that they are not set here. Leaving them set would
+# influence next binary.mk call leading to unexpected errors
+ifneq ($(DEP_LIB)$(LIBS)$(LOCAL_LDFLAGS)$(LOCAL_LDLIBS)$(LOCAL_INSTALL_PATH),)
+  $(warning $(NAME): DEP_LIB=$(DEP_LIB))
+  $(warning $(NAME): LIBS=$(LIBS))
+  $(warning $(NAME): LOCAL_LDFLAGS=$(LOCAL_LDFLAGS))
+  $(warning $(NAME): LOCAL_LDLIBS=$(LOCAL_LDLIBS))
+  $(warning $(NAME): LOCAL_INSTALL_PATH=$(LOCAL_INSTALL_PATH))
+  $(error $(NAME): static-lib.mk invoked with args reserved for binary.mk)
+endif
+
 # external headers - by default "include" dir - to disable functionality set "LOCAL_HEADERS_DIR := nothing"
 LOCAL_HEADERS_DIR ?= include
-ABS_HEADERS_DIR := $(abspath $(LOCAL_DIR)/$(LOCAL_HEADERS_DIR))
+ABS_HEADERS_DIR := $(abspath ./$(LOCAL_DIR)/$(LOCAL_HEADERS_DIR))
 
 SRCS += $(addprefix $(LOCAL_DIR), $(LOCAL_SRCS))
 HEADERS += $(addprefix $(LOCAL_DIR), $(LOCAL_HEADERS))
 
+# removing all files with unsupported extensions
+SRCS := $(filter $(LANGUAGE_EXTENSIONS), $(SRCS))
+
 # linking prerequisites
-OBJS.$(NAME) := $(patsubst %.c,$(PREFIX_O)%.o,$(SRCS))
+OBJS.$(NAME) := $(patsubst %,$(PREFIX_O)%.o,$(basename $(SRCS)))
 
 # compilation prerequisites - component order-only dependency
 $(OBJS.$(NAME)): | $(DEPS)
 
-# potentially custom CFLAGS/LDFLAGS for compilation and linking
-# add ABS_HEADERS_DIR to CFLAGS to build always using local headers instead of installed ones
+# potentially custom CFLAGS/CXXFLAGS/LDFLAGS for compilation and linking
+# add ABS_HEADERS_DIR to CFLAGS/CXXFLAGS to build always using local headers instead of installed ones
 $(OBJS.$(NAME)): CFLAGS:=-I"$(ABS_HEADERS_DIR)" $(CFLAGS) $(LOCAL_CFLAGS)
+$(OBJS.$(NAME)): CXXFLAGS:=-I"$(ABS_HEADERS_DIR)" $(CXXFLAGS) $(LOCAL_CXXFLAGS)
 
 # dynamically generated dependencies (file-to-file dependencies)
-DEPS.$(NAME) := $(patsubst %.c,$(PREFIX_O)%.c.d,$(SRCS))
+DEPS.$(NAME) := $(patsubst %,$(PREFIX_O)%.d,$(SRCS))
 -include $(DEPS.$(NAME))
 
 # rule for installing headers
@@ -100,3 +116,4 @@ DEPS :=
 SRCS :=
 HEADERS :=
 LOCAL_CFLAGS :=
+LOCAL_CXXFLAGS :=

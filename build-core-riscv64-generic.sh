@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 #
 # Shell script for building Phoenix-RTOS firmware
 #
@@ -12,13 +12,14 @@
 set -e
 
 b_log "Building phoenix-rtos-kernel"
+make -C "phoenix-rtos-kernel" all
 
-KERNEL_MAKECMDGOALS="install-headers"
+if [ "$LIBPHOENIX_DEVEL_MODE" = "y" ]; then
+	make -C "phoenix-rtos-kernel" install-headers
 
-make -C "phoenix-rtos-kernel" $KERNEL_MAKECMDGOALS all
-
-b_log "Building libphoenix"
-make -C "libphoenix" all install
+	b_log "Building libphoenix"
+	make -C "libphoenix" all install
+fi
 
 b_log "Building phoenix-rtos-corelibs"
 make -C "phoenix-rtos-corelibs" all install
@@ -32,10 +33,5 @@ make -C "phoenix-rtos-devices" all install
 b_log "Building coreutils"
 make -C "phoenix-rtos-utils" all install
 
-b_log "Building hostutils"
-make -C "phoenix-rtos-hostutils" -f Makefile.old all
-cp "$PREFIX_BUILD_HOST/prog.stripped/syspagen" "$PREFIX_BOOT"
-
-#FIXME: tests should not always be built as a part of CORE
-b_log "Building phoenix-rtos-tests"
-make -C "phoenix-rtos-tests" all
+b_log "Building posixsrv"
+make -C "phoenix-rtos-posixsrv" all install

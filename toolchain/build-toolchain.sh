@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 # $1 - toolchain target (e.g. arm-phoenix)
 # $2 - toolchain install absolute path (i.e. no "." or ".." in the path)
 
@@ -11,27 +11,32 @@ log() {
 }
 
 # targets for libphoenix and phoenix-rtos-kernel for installing headers
-declare -A TOOLCHAN_TO_PHOENIX_TARGET=(
-    [arm-phoenix]="armv7a7-imx6ull"
+declare -A TOOLCHAN_TO_PHOENIX_TARGETS=(
+    [arm-phoenix]="armv7a9-zynq7000 armv7a7-imx6ull armv7m7-imxrt106x armv7m4-stm32l4x6"
     [i386-pc-phoenix]="ia32-generic"
-    [riscv64-phoenix]="riscv64-spike"
+    [riscv64-phoenix]="riscv64-generic"
+    [sparc-phoenix]="sparcv8leon-gr716 sparcv8leon-gr712rc sparcv8leon-generic"
 )
 
-if [ -z "$1" ] || [ -z "${TOOLCHAN_TO_PHOENIX_TARGET[$1]}" ]; then
+TARGET="$1"
+BUILD_ROOT="$2"
+BUILD_DIR="${BUILD_ROOT}/_build"
+
+if [ -z "$TARGET" ] || [ -z "${TOOLCHAN_TO_PHOENIX_TARGETS[$TARGET]}" ]; then
     echo "Missing or invalid target provided! Abort."
     echo "officially supported targets:"
-    printf "%s\n" "${!TOOLCHAN_TO_PHOENIX_TARGET[@]}"
+    printf "%s\n" "${!TOOLCHAN_TO_PHOENIX_TARGETS[@]}"
     exit 1
 fi
 
-PHOENIX_TARGET="${TOOLCHAN_TO_PHOENIX_TARGET[$1]}"
+PHOENIX_TARGETS="${TOOLCHAN_TO_PHOENIX_TARGETS[$TARGET]}"
 
-if [ -z "$2" ]; then
+if [ -z "$BUILD_ROOT" ]; then
     echo "No toolchain install path provided! Abort."
     exit 1
 fi
 
-if [ "${2:0:1}" != "/" ]; then
+if [ "${BUILD_ROOT:0:1}" != "/" ]; then
     echo "Path must not be relative."
     exit 1
 fi
@@ -41,23 +46,37 @@ if [ ! -f "$SCRIPT_DIR/../../phoenix-rtos-kernel/Makefile" ] || [ ! -f "$SCRIPT_
     exit 1
 fi
 
+# Those env variables override command line options passed to configure scripts
+# This check was added due to libstdc++ configure using host compiler instead of cross compiler
+# TODO: check if all stages are affected. If not then consider using unset in those stages
+if [[ -v CC || -v CFLAGS || -v LIBS || -v CPPFLAGS || -v CXX || -v CXXFLAGS || -v CPP || -v CXXCPP || -v CXXFILT ]]; then
+    echo "Environment contains variables that should not be set. Abort."
+    echo "Make sure to unset CC CFLAGS LIBS CPPFLAGS CXX CXXFLAGS CPP CXXCPP CXXFILT"
+    exit 1
+fi
+
+if command -v "${TARGET}-gcc" > /dev/null; then
+    echo "Command \"${TARGET}-gcc\" found in PATH. Abort."
+    echo "Make sure to to remove existing toolchain from PATH"
+    exit 1
+fi
+
 # old legacy versions of the compiler:
 #BINUTILS=binutils-2.28
 #GCC=gcc-7.1.0
 
-BINUTILS=binutils-2.34
-GCC=gcc-9.3.0
+BINUTILS=binutils-2.43
+GCC=gcc-9.5.0
 
-TARGET="$1"
-BUILD_ROOT="$2"
 TOOLCHAIN_PREFIX="${BUILD_ROOT}/${TARGET}"
 SYSROOT="${TOOLCHAIN_PREFIX}/${TARGET}"
 MAKEFLAGS="-j9 -s"
 export MAKEFLAGS
 
 mkdir -p "${TOOLCHAIN_PREFIX}"
-cp ./*.patch "${BUILD_ROOT}"
-cd "${BUILD_ROOT}"
+mkdir -p "${BUILD_DIR}"
+cp ./*.patch "${BUILD_DIR}"
+cd "${BUILD_DIR}"
 
 download() {
     log "downloading packages"
@@ -88,7 +107,7 @@ build_binutils() {
     pushd "${BINUTILS}/build" > /dev/null
 
     ../configure --target="${TARGET}" --prefix="${TOOLCHAIN_PREFIX}" \
-                 --with-sysroot="${SYSROOT}" --enable-lto
+                 --with-sysroot="${SYSROOT}" --enable-lto --enable-deterministic-archives
     make
 
     log "installing binutils"
@@ -112,25 +131,29 @@ build_gcc_stage1() {
 
     # GCC compilation options
     # --with-sysroot -> cross-compiler sysroot
+    # --with-gxx-include-dir -> configure as a subdir of sysroot for c++ includes to work with external (out-of-toolchain) sysroot
     # --with-newlib -> do note generate standard library includes by fixincludes, do not include _eprintf in libgcc
     # --disable-libssp -> stack smashing protector library disabled
     # --disable-nls -> all compiler messages will be in english
-    # --disable-tls -> disable Thread Local Storage as it's not supported Yet (note: C11 incompatibility?)
+    # --enable-tls -> enable Thread Local Storage
     # --enable-initfini-array -> force init/fini array support instead of .init .fini sections
     # --disable-decimal-float -> not relevant for other than i386 and PowerPC
     # --disable-libquadmath -> not using fortran and quad floats
+    # --enable-threads=posix -> enable POSIX threads
 
 
     # stage1 compiler (gcc only)
     ../configure --target="${TARGET}" --prefix="${TOOLCHAIN_PREFIX}" \
                  --with-sysroot="${SYSROOT}" \
+                 --with-gxx-include-dir="${SYSROOT}/include/c++" \
                  --enable-languages=c,c++ --with-newlib \
                  --with-headers=yes \
-                 --disable-tls \
+                 --enable-tls \
                  --enable-initfini-array \
                  --disable-decimal-float \
                  --disable-libquadmath \
-                 --disable-libssp --disable-nls
+                 --disable-libssp --disable-nls \
+                 --enable-threads=posix
 
     make all-gcc
 
@@ -145,24 +168,27 @@ build_libc() {
     PATH="$TOOLCHAIN_PREFIX/bin":$PATH
     export PATH
 
-    # standard library headers should be installed in $SYSROOT/include
+    # standard library headers should be installed in $SYSROOT/usr/include
     # for fixincludes to work the headers need to be in $SYSROOT/usr/include, for libgcc compilation in $SYSROOT/include
     # create symlink for this stage (arm-none-eabi-gcc does the same - see https://github.com/xpack-dev-tools/arm-gcc-original-scripts/blob/master/build-toolchain.sh)
-    # FIXME: keep the symlink for now until install dir changes in libphoenix and kernel would be well-propagated
-    ln -sf . "${SYSROOT}/usr"
+    mkdir -p "${SYSROOT}/usr/include"
+    ln -snf usr/include "${SYSROOT}/include"
 
-    log "installing kernel headers"
-    make -C "$SCRIPT_DIR/../../phoenix-rtos-kernel" TARGET="$PHOENIX_TARGET" install-headers
+    # NOCHECKENV: don't check if build env is sane - we're building only necessary components by hand
+    for phx_target in $PHOENIX_TARGETS; do
+        log "[$phx_target] installing kernel headers"
+        make -C "$SCRIPT_DIR/../../phoenix-rtos-kernel" NOCHECKENV=1 TARGET="$phx_target" install-headers
 
-    # FIXME: libphoenix should be installed for all supported multilib target variants
-    log "installing libphoenix"
-    make -C "$SCRIPT_DIR/../../libphoenix" TARGET="$PHOENIX_TARGET" clean install
+        # FIXME: libphoenix should be installed for all supported multilib target variants
+        log "[$phx_target] installing libphoenix"
+        make -C "$SCRIPT_DIR/../../libphoenix" NOCHECKENV=1 TARGET="$phx_target" clean install
+    done
 
     PATH="$OLDPATH"
 }
 
 build_gcc_stage2() {
-    pushd "$BUILD_ROOT/${GCC}/build" > /dev/null
+    pushd "$BUILD_DIR/${GCC}/build" > /dev/null
 
     # (hackish) instead of reconfiguring and rebuilding whole gcc
     # just force rebuilding internal includes (and fixincludes)
@@ -175,11 +201,57 @@ build_gcc_stage2() {
     log "installing GCC (stage2)"
     make install-gcc install-target-libgcc
 
-    # TODO: build libstdc++ -> for now it fails because of libphoenix missing features
-
-    # FIXME: keep the symlink for now until install dir changes in libphoenix and kernel would be well-propagated
-    #rm -r "${SYSROOT:?}/usr"
+    # remove `include` symlink to install c++ headers in $SYSROOT/include/c++ as expected
+    rm -rf "${SYSROOT:?}/include"
     popd > /dev/null
+}
+
+build_libstdcpp() {
+    # use new compiler for the below builds
+    OLDPATH="$PATH"
+    PATH="$TOOLCHAIN_PREFIX/bin":$PATH
+
+    # set flags for arm to guarantee PIC for libstdc++
+    WITHPIC=
+    if [[ "$TARGET" = "arm-phoenix" || "$TARGET" = "sparc-phoenix" ]]; then
+        WITHPIC="--with-pic"
+    fi
+
+    # create "libbuilddir" directory for libstdc++
+    rm -rf "${BUILD_DIR}/${GCC}/build/${TARGET}/libstdc++-v3"
+    mkdir -p "${BUILD_DIR}/${GCC}/build/${TARGET}/libstdc++-v3"
+    pushd "${BUILD_DIR}/${GCC}/build/${TARGET}/libstdc++-v3" > /dev/null
+
+    log "building stdlibc++"
+    # LIBSTDC++ compilation options
+    # --host -> target is a host for libstdc++
+    # --with-gxx-include-dir -> configure as a subdir of sysroot for c++ includes to work with external (out-of-toolchain) sysroot
+    # --with-libphoenix -> use libphoenix as standard C library
+    # --enable-tls -> enable Thread Local Storage
+    # --disable-nls ->  all compiler messages will be in english
+    # --disable-shared -> disable building shared libraries [default=yes]
+    # --srcdir -> point to the directory with source files, because the current directory is incorrect for srcdir
+    # --with-pic -> build library files as PIC files
+
+    # now, we use files from generic for every category in libstdc++v3/config directory
+    ../../../libstdc++-v3/configure --target="${TARGET}" \
+                                    --host="${TARGET}" \
+                                    --prefix="${SYSROOT}" \
+                                    --with-gxx-include-dir="${SYSROOT}/include/c++" \
+                                    --with-libphoenix \
+                                    --enable-tls \
+                                    --disable-nls \
+                                    --disable-shared \
+                                    --srcdir="../../../libstdc++-v3" \
+                                    $WITHPIC
+
+    make
+
+    log "installing stdlibc++"
+    make install
+
+    popd > /dev/null
+    PATH="$OLDPATH"
 }
 
 strip_binaries() {
@@ -204,6 +276,7 @@ build_gcc_stage1;
 
 build_libc;
 build_gcc_stage2;
+build_libstdcpp;
 
 strip_binaries;
 
